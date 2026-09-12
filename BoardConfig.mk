@@ -90,7 +90,11 @@ VENDOR_SECURITY_PATCH := 2099-12-31
 PLATFORM_VERSION := 16.1.0
 
 # TWRP Configuration
-TW_THEME := portrait_hdpi
+# 手表小屏：portrait_hdpi 按 1080x1920 设计，TWRP 等比缩放后在手表上字太小。
+# portrait_mdpi 的设计分辨率是 480x800，同样的屏幕下 UI 大约放大 1.5 倍。
+# 如果实测这块屏是正方形（比如 320x320 / 360x360），改成 watch_mdpi 更大更合适；
+# 用 `adb shell cat /sys/class/graphics/fb0/virtual_size` 可以看实际分辨率。
+TW_THEME := portrait_mdpi
 TW_EXTRA_LANGUAGES := true
 TW_SCREEN_BLANK_ON_BOOT := true
 TW_INPUT_BLACKLIST := "hbtp_vm"
