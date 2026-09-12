@@ -1,16 +1,106 @@
+# Recovery USB gadget (configfs).
+#
+# 为什么需要这个文件：
+#
+# 1) TWRP 的 recovery init (bootable/recovery/etc/init.rc) 只在 `on fs` 里挂了
+#    functionfs，既不会 `mount configfs`，也不会建立 /config/usb_gadget/g1；
+#    AOSP 的 init.usb.rc 里那一整套 gadget 树是它自己建的，recovery 里没有这份。
+# 2) 原厂 init（boot ramdisk 里那个二进制里有 /sys/class/udc 字符串）会扫
+#    /sys/class/udc 自动填 sys.usb.controller，TWRP 的 init 没有这段厂商补丁，
+#    所以这个属性一直是空的。原厂 init.usb.configfs.rc 里所有规则最后都是
+#        write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+#    属性为空 -> UDC 写空 -> gadget 永不 bind -> 电脑上一点反应都没有。
+# 3) 原厂那套同时处理 adb / mtp / mtp,adb 等组合，这里至少要把 adb 单独的情况
+#    补上（TWRP 关掉 MTP 时 sys.usb.config 就是 adb）。
+# 4) 还要自己给 sys.usb.config 一个默认值：Android 里这个属性是框架的
+#    UsbDeviceManager 设的，recovery 没有框架；而 TWRP 上游那份 rc 之所以
+#    "插上就有 adb"，是它在 `on fs` 里直接写了 `functions adb` + `enable 1`
+#    （旧 android_usb 接口），configfs 路径没有这个默认动作。
+#
+# 所以这里把 gadget 树、functions、controller 属性和 adb/mtp 规则一次做全。
+
+on init
+    # ---- configfs gadget 树 ----
+    mkdir /config 0770 root root
+    mount configfs none /config
+    mkdir /config/usb_gadget 0770 root root
+    mkdir /config/usb_gadget/g1 0770 root root
+    write /config/usb_gadget/g1/idVendor 0x1782
+    write /config/usb_gadget/g1/idProduct 0x4002
+    write /config/usb_gadget/g1/bcdDevice 0xffff
+    write /config/usb_gadget/g1/bDeviceClass 0
+    mkdir /config/usb_gadget/g1/strings/0x409 0770 root root
+    write /config/usb_gadget/g1/strings/0x409/serialnumber ${ro.serialno}
+    write /config/usb_gadget/g1/strings/0x409/manufacturer "Spreadtrum"
+    write /config/usb_gadget/g1/strings/0x409/product "sl8541e_1h10"
+    mkdir /config/usb_gadget/g1/configs/b.1 0770 root root
+    mkdir /config/usb_gadget/g1/configs/b.1/strings/0x409 0770 root root
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "adb"
+    write /config/usb_gadget/g1/configs/b.1/MaxPower 500
+    write /config/usb_gadget/g1/configs/b.1/bmAttributes 0xc0
+
+    # ---- functions ----
+    mkdir /config/usb_gadget/g1/functions/ffs.adb 0770 root root
+    mkdir /config/usb_gadget/g1/functions/mtp.gs0 0770 root root
+
+    # ---- 原厂 init 会自动填的三件套，recovery 里得自己来 ----
+    setprop sys.usb.mode normal
+    setprop sys.usb.configfs 1
+    setprop sys.usb.controller musb-hdrc.0.auto
+
+on boot
+    # 没有框架来设这个属性，recovery 自己给默认值，否则下面的规则永远不会触发。
+    # 放在 on boot 是因为 adbd 需要 /dev/usb-ffs/adb，而那是 on fs 才挂的。
+    setprop sys.usb.config adb
+
+# ---------------------------------------------------------------- adb only
+on property:sys.usb.config=adb
+    start adbd
+
+on property:sys.usb.ffs.ready=1 && property:sys.usb.config=adb
+    write /config/usb_gadget/g1/idVendor 0x1782
+    write /config/usb_gadget/g1/idProduct 0x4002
+    write /config/usb_gadget/g1/bDeviceClass 0
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "adb"
+    rm /config/usb_gadget/g1/configs/b.1/f1
+    rm /config/usb_gadget/g1/configs/b.1/f2
+    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/f1
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    setprop sys.usb.state ${sys.usb.config}
+
+# ---------------------------------------------------------------- mtp only
+on property:sys.usb.config=mtp
+    write /config/usb_gadget/g1/idVendor 0x1782
+    write /config/usb_gadget/g1/idProduct 0x4001
+    write /config/usb_gadget/g1/bDeviceClass 0
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "mtp"
+    rm /config/usb_gadget/g1/configs/b.1/f1
+    rm /config/usb_gadget/g1/configs/b.1/f2
+    symlink /config/usb_gadget/g1/functions/mtp.gs0 /config/usb_gadget/g1/configs/b.1/f1
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    setprop sys.usb.state ${sys.usb.config}
+
+# ---------------------------------------------------------------- mtp + adb
 on property:sys.usb.config=mtp,adb
     start adbd
 
 on property:sys.usb.ffs.ready=1 && property:sys.usb.config=mtp,adb
+    write /config/usb_gadget/g1/idVendor 0x1782
+    write /config/usb_gadget/g1/idProduct 0x4002
+    write /config/usb_gadget/g1/bDeviceClass 0
     write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "mtp_adb"
     rm /config/usb_gadget/g1/configs/b.1/f1
     rm /config/usb_gadget/g1/configs/b.1/f2
-    rm /config/usb_gadget/g1/configs/b.1/f3
-    rm /config/usb_gadget/g1/configs/b.1/f4
-    rm /config/usb_gadget/g1/configs/b.1/f5
-    write /config/usb_gadget/g1/idVendor 0x1782
-    write /config/usb_gadget/g1/idProduct 0x4002
     symlink /config/usb_gadget/g1/functions/mtp.gs0 /config/usb_gadget/g1/configs/b.1/f1
     symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/f2
     write /config/usb_gadget/g1/UDC ${sys.usb.controller}
     setprop sys.usb.state ${sys.usb.config}
+
+# ---------------------------------------------------------------- teardown
+on property:sys.usb.config=none
+    write /config/usb_gadget/g1/UDC "none"
+    setprop sys.usb.ffs.ready 0
+
+on property:sys.usb.ffs.offline=1
+    stop adbd
+    start adbd
